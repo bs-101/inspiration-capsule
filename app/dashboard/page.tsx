@@ -30,6 +30,8 @@ export default function DashboardPage() {
   // 页面初始化和用户认证检查 - React useEffect 固定模式
   useEffect(() => {
     const checkAuthAndInitialize = async () => {
+      console.log('Dashboard页面初始化，检查认证状态...')
+      console.log(isSupabaseConfigured)
       if (!isSupabaseConfigured) {
         // 演示模式 - 立即显示页面和演示数据
         setIsLoadingContent(false)
@@ -99,11 +101,15 @@ export default function DashboardPage() {
           setUser(session.user)
           
           // 只在session真正发生变化且已完成初始加载时才重新加载内容
+          // 特别处理：忽略由页面焦点变化导致的 SIGNED_IN 事件
           if (hasInitialLoadRef.current && sessionChanged && event === "SIGNED_IN") {
             console.log('检测到真正的用户登录变化，重新加载用户灵感')
             loadUserInspirations(session.user.id)
-          } else if (hasInitialLoadRef.current && !sessionChanged) {
-            console.log('Dashboard Session未变化，跳过重新加载 - 这是页面焦点变化导致的重复事件')
+          } else if (hasInitialLoadRef.current && !sessionChanged && event === "SIGNED_IN") {
+            console.log('Dashboard Session未变化，这是页面焦点变化导致的重复 SIGNED_IN 事件，忽略')
+          } else if (hasInitialLoadRef.current && event === "TOKEN_REFRESHED") {
+            console.log('Token 刷新事件，保持当前状态不变')
+            // Token 刷新不需要重新加载数据，只需要确保用户状态是最新的
           }
         } else {
           setUser(null)
@@ -134,7 +140,7 @@ export default function DashboardPage() {
       // 当页面从隐藏变为可见时
       if (document.visibilityState === 'visible') {
         // 防抖：如果距离上次变化时间太短，则忽略
-        if (now - lastVisibilityChange < 1000) {
+        if (now - lastVisibilityChange < 30000) {
           return
         }
         
@@ -212,6 +218,8 @@ export default function DashboardPage() {
     }
 
     try {
+      // 记录数据加载时间
+      setLastDataLoadTime(Date.now())
       setIsLoadingContent(true) // 开始加载内容
       setError(null) // 清除之前的错误
 
@@ -264,8 +272,6 @@ export default function DashboardPage() {
         setUserInspirations(inspirationsData || [])
       }
       
-      // 记录数据加载时间
-      setLastDataLoadTime(Date.now())
     } catch (error: any) {
       console.error("Error loading user inspirations:", error)
       if (error?.message === '请求超时') {
@@ -469,7 +475,11 @@ export default function DashboardPage() {
                     取消
                   </Button>
                 </div>
-                <InspirationForm onSuccess={handleInspirationAdded} />
+                <InspirationForm 
+                  onSuccess={handleInspirationAdded} 
+                  authReady={authChecked && !!user}
+                  user={user}
+                />
               </CardContent>
             </Card>
           </div>

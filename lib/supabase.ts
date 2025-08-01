@@ -4,11 +4,20 @@ import { createClient } from "@supabase/supabase-js"
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-key"
 
+// 添加调试信息 - 开发调试代码
+console.log("=== Supabase 配置调试 ===")
+console.log("NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL)
+console.log("NEXT_PUBLIC_SUPABASE_ANON_KEY:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "已设置" : "未设置")
+console.log("supabaseUrl:", supabaseUrl)
+console.log("包含 placeholder:", supabaseUrl.includes("placeholder"))
+
 // 检查是否配置了真实的 Supabase 凭据
 export const isSupabaseConfigured =
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
   !process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder")
+
+console.log("isSupabaseConfigured:", isSupabaseConfigured)
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
