@@ -19,7 +19,34 @@ export const isSupabaseConfigured =
 
 console.log("isSupabaseConfigured:", isSupabaseConfigured)
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// 使用对象包装来确保引用更新 - 自定义设计模式
+const supabaseWrapper = {
+  client: createClient(supabaseUrl, supabaseAnonKey)
+}
+
+// 导出获取当前客户端的函数 - 自定义业务逻辑
+export const getSupabaseClient = () => supabaseWrapper.client
+
+// 为了向后兼容，导出 supabase 对象 - 兼容性设计
+export const supabase = new Proxy({} as any, {
+  get(target, prop) {
+    return supabaseWrapper.client[prop as keyof typeof supabaseWrapper.client]
+  }
+})
+
+// 重新初始化 Supabase 客户端的函数 - 自定义业务逻辑
+export const reinitializeSupabaseClient = () => {
+  console.log('🔄 重新初始化 Supabase 客户端...')
+  
+  // 创建新的客户端实例 - Supabase 固定语法
+  const newClient = createClient(supabaseUrl, supabaseAnonKey)
+  
+  // 更新包装器中的客户端实例 - 自定义逻辑
+  supabaseWrapper.client = newClient
+  
+  console.log('✅ Supabase 客户端重新初始化完成')
+  return newClient
+}
 
 // 用户资料类型定义 - 自定义业务数据结构
 export type UserProfile = {

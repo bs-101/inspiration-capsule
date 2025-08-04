@@ -5,26 +5,32 @@ import { useRouter } from "next/navigation"
 import { supabase, isSupabaseConfigured, type InspirationCard } from "@/lib/supabase"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Navbar } from "@/components/navbar"
 import { InspirationForm } from "@/components/inspiration-form"
 import { InspirationCard as InspirationCardComponent } from "@/components/inspiration-card"
-import { AlertTriangle, Plus, Sparkles, RefreshCw } from "lucide-react"
-import type { User } from "@supabase/supabase-js"
+import { AlertTriangle, Plus, Sparkles, RefreshCw, Filter } from "lucide-react"
+import type { User, AuthChangeEvent, Session } from "@supabase/supabase-js"
 
 
 export default function DashboardPage() {
   // 状态管理 - React Hooks标准用法
   const [user, setUser] = useState<User | null>(null)
   const [userInspirations, setUserInspirations] = useState<InspirationCard[]>([])
+  const [filteredInspirations, setFilteredInspirations] = useState<InspirationCard[]>([])
+  const [selectedCategory, setSelectedCategory] = useState<string>('all')
+  const [availableCategories, setAvailableCategories] = useState<string[]>([])
   const [isLoadingContent, setIsLoadingContent] = useState(true) // 内容加载状态 - 用户体验优化
   const [showForm, setShowForm] = useState(false)
   const [authChecked, setAuthChecked] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [lastDataLoadTime, setLastDataLoadTime] = useState<number>(0) // 记录上次数据加载时间
   const [isInitializing, setIsInitializing] = useState(true) // 初始化状态，用于显示骨架屏
+  
+  // 切屏检测相关的 ref - React useRef 固定语法，用于记录状态
   const previousSessionRef = useRef<string | null>(null) // 记录上一次的session ID - 防止重复加载
   const hasInitialLoadRef = useRef(false) // 记录是否已完成初始加载 - 防止重复加载
+  
   const router = useRouter()
 
   // 页面初始化和用户认证检查 - React useEffect 固定模式
@@ -32,26 +38,31 @@ export default function DashboardPage() {
     const checkAuthAndInitialize = async () => {
       console.log('Dashboard页面初始化，检查认证状态...')
       console.log(isSupabaseConfigured)
+      
       if (!isSupabaseConfigured) {
-        // 演示模式 - 立即显示页面和演示数据
-        setIsLoadingContent(false)
         setAuthChecked(true)
+        setIsLoadingContent(false)
         setIsInitializing(false)
-        hasInitialLoadRef.current = true
         return
       }
 
       try {
-        // 获取当前用户状态 - Supabase Auth 标准方法
-        const {
-          data: { user },
-        } = await supabase.auth.getUser()
+        const { data: { user }, error } = await supabase.auth.getUser()
+        
+        if (error) {
+          console.error("Authentication error:", error)
+          setAuthChecked(true)
+          setIsLoadingContent(false)
+          setIsInitializing(false)
+          router.push("/")
+          return
+        }
 
         if (user) {
           setUser(user)
           setAuthChecked(true)
           setIsInitializing(false) // 页面可以显示了
-          previousSessionRef.current = user.id // 初始化session记录
+          previousSessionRef.current = user?.id || null // 初始化session记录
           
           // 异步加载用户灵感，不阻塞页面显示 - 用户体验优化
           loadUserInspirations(user.id)
@@ -76,12 +87,13 @@ export default function DashboardPage() {
 
     checkAuthAndInitialize()
 
-    // 监听认证状态变化 - Supabase Auth 固定模式（智能版本）
+    // 监听认证状态变化 - Supabase Auth 智能模式（同步公开灵感墙页面）
     if (isSupabaseConfigured) {
       const {
         data: { subscription },
-      } = supabase.auth.onAuthStateChange((event, session) => {
+      } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, session: Session | null) => {
         console.log('Dashboard认证状态变化:', event, '用户:', session?.user?.email)
+        console.log('页面可见性状态:', document.visibilityState)
         
         const currentSessionId = session?.user?.id || null
         const previousSessionId = previousSessionRef.current
@@ -94,98 +106,125 @@ export default function DashboardPage() {
           currentSessionId,
           previousSessionId, 
           sessionChanged,
-          hasInitialLoad: hasInitialLoadRef.current
+          hasInitialLoad: hasInitialLoadRef.current,
+          visibilityState: document.visibilityState
         })
-
+        
+        // 更新用户状态 - React状态管理
         if (session?.user) {
           setUser(session.user)
-          
-          // 只在session真正发生变化且已完成初始加载时才重新加载内容
-          // 特别处理：忽略由页面焦点变化导致的 SIGNED_IN 事件
-          if (hasInitialLoadRef.current && sessionChanged && event === "SIGNED_IN") {
-            console.log('检测到真正的用户登录变化，重新加载用户灵感')
-            loadUserInspirations(session.user.id)
-          } else if (hasInitialLoadRef.current && !sessionChanged && event === "SIGNED_IN") {
-            console.log('Dashboard Session未变化，这是页面焦点变化导致的重复 SIGNED_IN 事件，忽略')
-          } else if (hasInitialLoadRef.current && event === "TOKEN_REFRESHED") {
-            console.log('Token 刷新事件，保持当前状态不变')
-            // Token 刷新不需要重新加载数据，只需要确保用户状态是最新的
-          }
         } else {
           setUser(null)
           router.push("/")
+          return
+        }
+        
+        // 特殊处理：macOS切屏导致的SIGNED_IN事件 - 智能检测和修复
+        if (event === "SIGNED_IN" && !sessionChanged && hasInitialLoadRef.current) {
+          console.warn('⚠️ Dashboard检测到macOS切屏导致的虚假SIGNED_IN事件')
+          console.log('🔍 分析：macOS切屏会挂起认证相关的网络连接，但不影响匿名数据库查询')
+          console.log('💡 原理：登录后每个Supabase请求都会自动附加JWT token并验证认证状态')
+          console.log('🔄 解决：重新加载页面以重建完整的认证环境和网络连接')
+          
+          // 显示用户友好的提示信息
+          const reloadMessage = '检测到系统切屏，正在重新建立连接...'
+          
+          // 创建临时提示元素 - DOM操作固定语法
+          const notification = document.createElement('div')
+          notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #3b82f6;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 9999;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          `
+          notification.textContent = reloadMessage
+          document.body.appendChild(notification)
+          
+          // 延迟500ms后重新加载，给用户看到提示的时间 - 自定义业务逻辑
+          setTimeout(() => {
+            console.log('🔄 Dashboard强制重新加载页面以重建稳定的认证环境和网络连接')
+            window.location.reload()
+          }, 500)
+          
+          return // 提前返回，避免执行后续逻辑
+        }
+        
+        // 正常的认证状态变化处理
+        if (hasInitialLoadRef.current && sessionChanged) {
+          if (event === "SIGNED_IN") {
+            console.log('Dashboard检测到真正的用户登录，重新加载用户灵感')
+            if (session?.user) {
+              loadUserInspirations(session.user.id)
+            }
+          } else if (event === "SIGNED_OUT") {
+            console.log('Dashboard检测到用户登出，跳转到首页')
+            router.push("/")
+          }
+        } else if (hasInitialLoadRef.current && !sessionChanged) {
+          console.log('Dashboard Session未变化，跳过重新加载')
+          
+          // 处理INITIAL_SESSION事件 - 这是正常的稳定状态
+          if (event === "INITIAL_SESSION") {
+            console.log('✅ Dashboard INITIAL_SESSION - 连接状态稳定')
+          }
         }
         
         // 更新记录的session ID - 状态同步
         previousSessionRef.current = currentSessionId
+        
+        // 忽略其他事件如 TOKEN_REFRESHED 等，避免不必要的重新加载
       })
 
       return () => subscription.unsubscribe()
     }
   }, [router])
 
-  // 页面可见性监听 - 解决切换屏幕后数据卡住问题（优化版本）
+  // 分类筛选逻辑 - 业务逻辑：根据选中分类过滤灵感
   useEffect(() => {
-    let visibilityTimeout: NodeJS.Timeout | null = null
-    let lastVisibilityChange = 0 // 记录上次可见性变化时间，用于防抖
-    
+    if (selectedCategory === 'all') {
+      setFilteredInspirations(userInspirations)
+    } else {
+      setFilteredInspirations(userInspirations.filter(inspiration => inspiration.category === selectedCategory))
+    }
+  }, [userInspirations, selectedCategory])
+
+  // 分类筛选处理函数 - 业务逻辑：更新选中的分类
+  const handleCategoryFilter = (category: string) => {
+    setSelectedCategory(category)
+  }
+
+  // macOS 切屏检测 - 简单重新加载方案
+  useEffect(() => {
+    let lastVisibilityChange = Date.now()
+
     const handleVisibilityChange = () => {
       const now = Date.now()
       
-      // 清除之前的定时器
-      if (visibilityTimeout) {
-        clearTimeout(visibilityTimeout)
+      if (document.visibilityState === 'visible') {
+        const timeSinceLastChange = now - lastVisibilityChange
+        
+        // 检测到可能的 macOS 切屏（超过2秒的不可见时间）
+        if (timeSinceLastChange > 2000) {
+          console.log('检测到可能的 macOS 切屏，重新加载页面以重建认证连接')
+          window.location.reload()
+        }
       }
       
-      // 当页面从隐藏变为可见时
-      if (document.visibilityState === 'visible') {
-        // 防抖：如果距离上次变化时间太短，则忽略
-        if (now - lastVisibilityChange < 30000) {
-          return
-        }
-        
-        lastVisibilityChange = now
-        
-        // 只有在用户已登录、页面已初始化、且当前没有在加载内容时才考虑刷新
-        if (user && !isInitializing && authChecked && !isLoadingContent) {
-          console.log('页面重新可见，检查是否需要刷新数据')
-          
-          // 延迟1秒执行，确保用户真的回到了页面（而不是快速切换）
-           visibilityTimeout = setTimeout(() => {
-             // 再次检查状态，确保页面仍然可见且条件满足
-             if (document.visibilityState === 'visible' && user && !isLoadingContent) {
-               console.log('执行数据刷新检查')
-               
-               // 智能刷新：只有当数据超过5分钟未更新时才刷新
-               const dataAge = Date.now() - lastDataLoadTime
-               const FIVE_MINUTES = 5 * 60 * 1000
-               
-               if (dataAge > FIVE_MINUTES) {
-                 console.log('数据已过期，执行刷新')
-                 loadUserInspirations(user.id)
-               } else {
-                 console.log('数据仍然新鲜，无需刷新')
-               }
-             }
-           }, 1000)
-        }
-      } else {
-        // 页面变为隐藏时记录时间
-        lastVisibilityChange = now
-      }
+      lastVisibilityChange = now
     }
 
-    // 添加页面可见性变化监听器 - 浏览器 API 标准用法
     document.addEventListener('visibilitychange', handleVisibilityChange)
-    
-    // 清理函数 - React useEffect 标准模式
+
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
-      if (visibilityTimeout) {
-        clearTimeout(visibilityTimeout)
-      }
     }
-  }, [user, isInitializing, authChecked, isLoadingContent, lastDataLoadTime]) // 依赖项：当相关状态变化时重新绑定监听器
+  }, []) // 不需要依赖项，因为只是简单的页面重新加载
 
   // 加载用户灵感数据 - 自定义业务逻辑
   const loadUserInspirations = async (userId: string) => {
@@ -218,8 +257,6 @@ export default function DashboardPage() {
     }
 
     try {
-      // 记录数据加载时间
-      setLastDataLoadTime(Date.now())
       setIsLoadingContent(true) // 开始加载内容
       setError(null) // 清除之前的错误
 
@@ -272,6 +309,10 @@ export default function DashboardPage() {
         setUserInspirations(inspirationsData || [])
       }
       
+      // 提取所有可用的分类 - 业务逻辑：从用户灵感中提取分类
+        const categories = [...new Set((inspirationsData || []).map((item: any) => item.category).filter(Boolean))] as string[]
+      setAvailableCategories(categories)
+      
     } catch (error: any) {
       console.error("Error loading user inspirations:", error)
       if (error?.message === '请求超时') {
@@ -292,27 +333,36 @@ export default function DashboardPage() {
     }
   }
 
-  // 处理删除灵感 - 自定义业务逻辑
+  // 处理删除灵感 - 优化版本：前端直接移除，无需重新加载
   const handleDeleteInspiration = async (id: string) => {
     if (!isSupabaseConfigured || !user) return
 
     try {
+      // 先在前端乐观更新：立即移除卡片 - 用户体验优化
+      const originalInspirations = [...userInspirations] // 备份原始数据，用于错误回滚
+      setUserInspirations(prev => prev.filter(inspiration => inspiration.id !== id))
+
+      // 后端删除操作 - Supabase 标准删除 API
       const { error } = await supabase
         .from("inspirations")
         .delete()
         .eq("id", id)
-        .eq("user_id", user.id) // 确保只能删除自己的灵感
+        .eq("user_id", user.id) // 确保只能删除自己的灵感 - 安全控制
 
       if (error) {
+        // 删除失败，回滚前端状态 - 错误处理
         console.error("Failed to delete inspiration:", error)
+        setUserInspirations(originalInspirations) // 恢复原始数据
         alert("删除失败: " + error.message)
         return
       }
 
-      // 重新加载灵感列表
-      loadUserInspirations(user.id)
+      console.log("灵感删除成功，已从前端列表移除")
+      // 删除成功，前端状态已经更新，无需额外操作
     } catch (error) {
+      // 网络错误或其他异常，回滚前端状态 - 错误处理
       console.error("Error deleting inspiration:", error)
+      setUserInspirations(prev => [...userInspirations]) // 恢复原始数据
       alert("删除时出错")
     }
   }
@@ -494,7 +544,7 @@ export default function DashboardPage() {
               </h2>
               <div className="px-3 py-1 bg-gradient-to-r from-purple-100 to-blue-100 rounded-full">
                  <span className="text-sm font-medium text-purple-700">
-                   {userInspirations.length} 个灵感
+                   {filteredInspirations.length} 个灵感
                  </span>
                </div>
              </div>
@@ -516,6 +566,47 @@ export default function DashboardPage() {
              </Button>
            </div>
 
+           {/* 分类筛选器 - 业务功能：分类筛选 */}
+           {availableCategories.length > 0 && (
+             <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
+               <CardContent className="p-6">
+                 <div className="flex items-center gap-4 flex-wrap">
+                   <div className="flex items-center gap-2">
+                     <Filter className="w-5 h-5 text-gray-600" />
+                     <span className="text-gray-700 font-medium">按分类筛选：</span>
+                   </div>
+                   <div className="flex gap-2 flex-wrap">
+                     <Badge
+                       variant={selectedCategory === 'all' ? 'default' : 'secondary'}
+                       className={`cursor-pointer transition-all duration-200 hover:scale-105 ${
+                         selectedCategory === 'all' 
+                           ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-md' 
+                           : 'hover:bg-gray-200'
+                       }`}
+                       onClick={() => handleCategoryFilter('all')}
+                     >
+                       全部 ({userInspirations.length})
+                     </Badge>
+                     {availableCategories.map((category, index) => (
+                       <Badge
+                         key={`dashboard-category-${index}-${category}`}
+                         variant={selectedCategory === category ? 'default' : 'secondary'}
+                         className={`cursor-pointer transition-all duration-200 hover:scale-105 ${
+                           selectedCategory === category 
+                             ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-md' 
+                             : 'hover:bg-gray-200'
+                         }`}
+                         onClick={() => handleCategoryFilter(category)}
+                       >
+                         {category} ({userInspirations.filter(item => item.category === category).length})
+                       </Badge>
+                     ))}
+                   </div>
+                 </div>
+               </CardContent>
+             </Card>
+           )}
+
            {isLoadingContent ? (
             // 内容加载状态 - 现代化设计
             <Card className="border-0 shadow-xl bg-white/80 backdrop-blur-sm">
@@ -524,29 +615,60 @@ export default function DashboardPage() {
                 <p className="text-gray-600">正在加载你的灵感...</p>
               </CardContent>
             </Card>
-          ) : userInspirations.length === 0 ? (
+          ) : filteredInspirations.length === 0 ? (
             // 空状态显示 - 现代化设计
             <Card className="border-0 shadow-xl bg-white/80 backdrop-blur-sm">
               <CardContent className="p-16 text-center">
-                <div className="relative mb-6">
-                  <Sparkles className="w-20 h-20 text-gray-400 mx-auto animate-bounce" />
-                  <div className="absolute inset-0 w-20 h-20 bg-purple-200 rounded-full filter blur-xl opacity-50 mx-auto animate-pulse"></div>
-                </div>
-                <h3 className="text-2xl font-semibold text-gray-700 mb-3">还没有灵感记录</h3>
-                <p className="text-gray-500 mb-6 text-lg">开始记录你的第一个灵感吧！</p>
-                <Button 
-                  onClick={() => setShowForm(true)}
-                  className="bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white px-6 py-3 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  创建第一个灵感
-                </Button>
+                {userInspirations.length === 0 ? (
+                  // 完全没有数据
+                  <>
+                    <div className="relative mb-6">
+                      <Sparkles className="w-20 h-20 text-gray-400 mx-auto animate-bounce" />
+                      <div className="absolute inset-0 w-20 h-20 bg-purple-200 rounded-full filter blur-xl opacity-50 mx-auto animate-pulse"></div>
+                    </div>
+                    <h3 className="text-2xl font-semibold text-gray-700 mb-3">还没有创建任何灵感</h3>
+                    <p className="text-gray-500 mb-6 text-lg">开始记录你的第一个创意想法吧！</p>
+                    <Button 
+                      onClick={() => setShowForm(true)}
+                      className="bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white px-6 py-3 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      创建第一个灵感
+                    </Button>
+                  </>
+                ) : (
+                  // 筛选后无结果
+                  <>
+                    <div className="relative mb-6">
+                      <Filter className="w-20 h-20 text-gray-400 mx-auto" />
+                      <div className="absolute inset-0 w-20 h-20 bg-gray-200 rounded-full filter blur-xl opacity-50 mx-auto animate-pulse"></div>
+                    </div>
+                    <h3 className="text-2xl font-semibold text-gray-700 mb-3">该分类下暂无灵感</h3>
+                    <p className="text-gray-500 mb-6 text-lg">试试其他分类，或者创建一个新的灵感吧！</p>
+                    <div className="flex gap-3 justify-center">
+                      <Button 
+                        variant="outline"
+                        onClick={() => handleCategoryFilter('all')}
+                        className="hover:bg-white/80 backdrop-blur-sm border-gray-200 hover:border-gray-300"
+                      >
+                        查看全部
+                      </Button>
+                      <Button 
+                        onClick={() => setShowForm(true)}
+                        className="bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white px-6 py-3 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
+                      >
+                        <Plus className="w-4 h-4 mr-2" />
+                        创建灵感
+                      </Button>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           ) : (
             // 灵感卡片网格布局 - 响应式网格，优化间距
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-              {userInspirations.map((inspiration, index) => (
+              {filteredInspirations.map((inspiration, index) => (
                 <div 
                   key={inspiration.id} 
                   className="animate-fade-in-up"

@@ -10,12 +10,20 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { Upload, X } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Badge } from "@/components/ui/badge"
+import { Upload, X, Plus, Palette } from "lucide-react"
 
 interface InspirationFormProps {
   onSuccess: () => void
   authReady?: boolean // 新增：从父组件传递认证状态
   user?: any // 新增：从父组件传递用户信息
+}
+
+interface UserCategory {
+  id: string
+  name: string
+  color: string
 }
 
 export function InspirationForm({ onSuccess, authReady: parentAuthReady, user: parentUser }: InspirationFormProps) {
@@ -28,6 +36,27 @@ export function InspirationForm({ onSuccess, authReady: parentAuthReady, user: p
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [authReady, setAuthReady] = useState(parentAuthReady || false) // 使用父组件传递的认证状态
+
+  // 用户自定义分类相关状态
+  const [userCategories, setUserCategories] = useState<UserCategory[]>([])
+  const [isAddingCategory, setIsAddingCategory] = useState(false)
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [newCategoryColor, setNewCategoryColor] = useState('#6366f1')
+  const [showAddCategoryDialog, setShowAddCategoryDialog] = useState(false)
+
+  // 预定义颜色选项
+  const colorOptions = [
+    '#3b82f6', // 蓝色
+    '#10b981', // 绿色
+    '#f59e0b', // 黄色
+    '#ef4444', // 红色
+    '#8b5cf6', // 紫色
+    '#06b6d4', // 青色
+    '#f97316', // 橙色
+    '#84cc16', // 青绿色
+    '#ec4899', // 粉色
+    '#6b7280'  // 灰色
+  ]
 
   // 简化的认证状态监听 - 只在没有父组件传递认证状态时才自己检查
   useEffect(() => {
@@ -69,7 +98,7 @@ export function InspirationForm({ onSuccess, authReady: parentAuthReady, user: p
     
     // 监听认证状态变化 - 固定模版（先设置监听器，再做初始检查）
     console.log("InspirationForm 设置认证状态监听器...")
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event: any, session: any) => {
       console.log("InspirationForm 认证状态变化:", event, session?.user?.id ? "已登录" : "未登录")
       console.log("InspirationForm 当前session详情:", session)
       
@@ -132,7 +161,114 @@ export function InspirationForm({ onSuccess, authReady: parentAuthReady, user: p
     }
   }, [parentAuthReady])
 
-  const categories = ["项目点子", "书籍摘录", "技术学习", "生活感悟"]
+  // 当认证状态就绪时，加载用户分类
+  useEffect(() => {
+    if (authReady) {
+      loadUserCategories()
+    }
+  }, [authReady])
+
+  const defaultCategories = ["项目点子", "书籍摘录", "技术学习", "生活感悟"]
+
+  // 加载用户自定义分类
+  const loadUserCategories = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { data, error } = await supabase
+        .from('user_categories')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true })
+
+      if (error) {
+        console.error('加载用户分类失败:', error)
+        return
+      }
+
+      // 去重逻辑：如果有重复的分类名，只保留第一个（最早创建的）
+      const uniqueCategories: UserCategory[] = []
+      const seenNames = new Set<string>()
+      
+      for (const category of data || []) {
+        if (!seenNames.has(category.name)) {
+          seenNames.add(category.name)
+          uniqueCategories.push(category)
+        } else {
+          console.warn(`发现重复分类: ${category.name}，已跳过 ID: ${category.id}`)
+        }
+      }
+
+      setUserCategories(uniqueCategories)
+    } catch (error) {
+      console.error('加载用户分类失败:', error)
+    }
+  }
+
+  // 添加新分类
+  const addCategory = async () => {
+    if (!newCategoryName.trim()) return
+
+    setIsAddingCategory(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('用户未登录')
+
+      const { data, error } = await supabase
+        .from('user_categories')
+        .insert({
+          user_id: user.id,
+          name: newCategoryName.trim(),
+          color: newCategoryColor
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setUserCategories(prev => [...prev, data])
+      setNewCategoryName('')
+      setNewCategoryColor('#6366f1')
+      setShowAddCategoryDialog(false)
+      setCategory(data.name) // 自动选择新创建的分类
+    } catch (error) {
+      console.error('添加分类失败:', error)
+      alert('添加分类失败: ' + (error instanceof Error ? error.message : '未知错误'))
+    } finally {
+      setIsAddingCategory(false)
+    }
+  }
+
+  // 删除分类
+  const deleteCategory = async (categoryId: string) => {
+    if (!confirm('确定要删除这个分类吗？')) return
+
+    try {
+      const { error } = await supabase
+        .from('user_categories')
+        .delete()
+        .eq('id', categoryId)
+
+      if (error) throw error
+
+      setUserCategories(prev => prev.filter(cat => cat.id !== categoryId))
+      // 如果删除的是当前选中的分类，清空选择
+      const deletedCategory = userCategories.find(cat => cat.id === categoryId)
+      if (deletedCategory && category === deletedCategory.name) {
+        setCategory('')
+      }
+    } catch (error) {
+      console.error('删除分类失败:', error)
+      alert('删除分类失败: ' + (error instanceof Error ? error.message : '未知错误'))
+    }
+  }
+
+  // 获取分类的颜色
+  const getCategoryColor = (categoryName: string) => {
+    const userCategory = userCategories.find(cat => cat.name === categoryName)
+    return userCategory?.color || '#6b7280'
+  }
   // const checkAuth = async () => {
   //   try {
   //     const { data: { session } } = await supabase.auth.getSession()
@@ -505,19 +641,110 @@ export function InspirationForm({ onSuccess, authReady: parentAuthReady, user: p
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="category">分类</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="category">分类</Label>
+              <Dialog open={showAddCategoryDialog} onOpenChange={setShowAddCategoryDialog}>
+                <DialogTrigger asChild>
+                  <Button type="button" variant="outline" size="sm">
+                    <Plus className="w-4 h-4 mr-1" />
+                    添加分类
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>添加自定义分类</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="category-name">分类名称</Label>
+                      <Input
+                        id="category-name"
+                        placeholder="输入分类名称"
+                        value={newCategoryName}
+                        onChange={(e) => setNewCategoryName(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>分类颜色</Label>
+                      <div className="flex gap-2 flex-wrap">
+                        {colorOptions.map((color) => (
+                          <button
+                            key={color}
+                            type="button"
+                            className={`w-8 h-8 rounded-full border-2 ${
+                              newCategoryColor === color ? 'border-gray-800' : 'border-gray-300'
+                            }`}
+                            style={{ backgroundColor: color }}
+                            onClick={() => setNewCategoryColor(color)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        onClick={addCategory}
+                        disabled={!newCategoryName.trim() || isAddingCategory}
+                        className="flex-1"
+                      >
+                        {isAddingCategory ? '添加中...' : '添加'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setShowAddCategoryDialog(false)}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </div>
             <Select value={category} onValueChange={setCategory}>
               <SelectTrigger>
                 <SelectValue placeholder="选择分类" />
               </SelectTrigger>
               <SelectContent>
-                {categories.map((cat) => (
-                  <SelectItem key={cat} value={cat}>
-                    {cat}
+                {/* 只显示用户分类（包含默认分类和自定义分类） */}
+                {userCategories.map((cat) => (
+                  <SelectItem key={`category-${cat.id}`} value={cat.name}>
+                    <div className="flex items-center gap-2 w-full">
+                      <div 
+                        className="w-3 h-3 rounded-full" 
+                        style={{ backgroundColor: cat.color }}
+                      />
+                      <span className="flex-1">{cat.name}</span>
+                      {/* 只有非默认分类才显示删除按钮 */}
+                      {!defaultCategories.includes(cat.name) && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-4 w-4 p-0 hover:bg-red-100"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            deleteCategory(cat.id)
+                          }}
+                        >
+                          <X className="w-3 h-3 text-red-500" />
+                        </Button>
+                      )}
+                    </div>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {/* 显示当前选中分类的颜色标识 */}
+            {category && (
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <div 
+                  className="w-3 h-3 rounded-full" 
+                  style={{ backgroundColor: getCategoryColor(category) }}
+                />
+                当前分类：{category}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">

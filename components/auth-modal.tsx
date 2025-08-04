@@ -102,7 +102,11 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
     setError("")
 
     try {
-      // Supabase Auth API标准注册方法
+      // 获取重定向域名 - 自定义业务逻辑（优先使用环境变量配置的生产域名）
+      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL
+      const currentOrigin = siteUrl || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
+      
+      // Supabase Auth API标准注册方法（带重定向配置）
       const { data, error } = await supabase.auth.signUp({
         email: registerEmail,
         password: registerPassword,
@@ -111,6 +115,8 @@ export function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps) {
             username: username, // 自定义用户元数据
             full_name: username,
           },
+          // 邮箱确认重定向URL - Supabase Auth 配置
+          emailRedirectTo: `${currentOrigin}/auth/callback`,
         },
       })
 
